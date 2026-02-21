@@ -246,7 +246,7 @@
 
     #chart-container {
       width: 100%;
-      height: 480px;
+      height: 540px;
     }
 
     /* ── Error ── */
@@ -305,8 +305,8 @@
       <span class="upload-label">Drop your CSV here or click to browse</span>
       <p class="upload-hint">
         Expected columns (case-insensitive):
-        <code>date</code> &nbsp;<code>open</code> &nbsp;<code>high</code> &nbsp;<code>low</code> &nbsp;<code>close</code>
-        &nbsp;— <code>volume</code> is optional
+        <code>date</code> &nbsp;<code>time</code> &nbsp;<code>open</code> &nbsp;<code>high</code> &nbsp;<code>low</code> &nbsp;<code>close</code> &nbsp;<code>up</code> &nbsp;<code>down</code>
+        &nbsp;— where <code>up</code> / <code>down</code> are up &amp; down volume
       </p>
     </div>
 
@@ -337,6 +337,15 @@
         <span class="stat-label">Period Low</span>
         <span class="stat-value down" id="stat-low">—</span>
       </div>
+      <div class="stat-divider" id="vol-divider" style="display:none"></div>
+      <div class="stat" id="stat-up-wrap" style="display:none">
+        <span class="stat-label">Up Vol</span>
+        <span class="stat-value up" id="stat-up-vol">—</span>
+      </div>
+      <div class="stat" id="stat-down-wrap" style="display:none">
+        <span class="stat-label">Down Vol</span>
+        <span class="stat-value down" id="stat-down-vol">—</span>
+      </div>
       <span class="filename-badge" id="stat-filename"></span>
     </div>
 
@@ -365,11 +374,11 @@
 
 <script>
   // ── DOM refs ──────────────────────────────────────────────────────────────
-  const uploadZone   = document.getElementById('upload-zone');
-  const fileInput    = document.getElementById('file-input');
-  const errorMsg     = document.getElementById('error-msg');
-  const statsBar     = document.getElementById('stats-bar');
-  const chartWrapper = document.getElementById('chart-wrapper');
+  const uploadZone     = document.getElementById('upload-zone');
+  const fileInput      = document.getElementById('file-input');
+  const errorMsg       = document.getElementById('error-msg');
+  const statsBar       = document.getElementById('stats-bar');
+  const chartWrapper   = document.getElementById('chart-wrapper');
   const chartContainer = document.getElementById('chart-container');
 
   const statCandles  = document.getElementById('stat-candles');
@@ -377,6 +386,11 @@
   const statTo       = document.getElementById('stat-to');
   const statHigh     = document.getElementById('stat-high');
   const statLow      = document.getElementById('stat-low');
+  const statUpVol    = document.getElementById('stat-up-vol');
+  const statDownVol  = document.getElementById('stat-down-vol');
+  const statUpWrap   = document.getElementById('stat-up-wrap');
+  const statDownWrap = document.getElementById('stat-down-wrap');
+  const volDivider   = document.getElementById('vol-divider');
   const statFilename = document.getElementById('stat-filename');
   const toolbarLabel = document.getElementById('toolbar-label');
 
@@ -421,8 +435,7 @@
 
   function setActiveBtn(mode) {
     [btnCandle, btnBar, btnLine].forEach(b => b.classList.remove('active'));
-    const map = { candle: btnCandle, bar: btnBar, line: btnLine };
-    map[mode].classList.add('active');
+    ({ candle: btnCandle, bar: btnBar, line: btnLine })[mode].classList.add('active');
   }
 
   function switchMode(mode) {
@@ -432,7 +445,7 @@
     renderChart(parsedData, currentFile);
   }
 
-  // ── CSV helpers ───────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
   function showError(msg) {
     errorMsg.textContent = '⚠ ' + msg;
     errorMsg.style.display = 'block';
@@ -443,9 +456,7 @@
     errorMsg.textContent = '';
   }
 
-  /**
-   * Finds column index by trying multiple name variants (case-insensitive).
-   */
+  /** Finds column index by trying multiple name variants (case-insensitive). */
   function findCol(headers, ...names) {
     const lower = headers.map(h => h.trim().toLowerCase());
     for (const name of names) {
@@ -456,19 +467,42 @@
   }
 
   /**
-   * Parses a date string or number into a YYYY-MM-DD string or Unix timestamp.
-   * Lightweight Charts accepts 'YYYY-MM-DD' strings or Unix seconds integers.
+   * Combines separate date and time strings → Unix seconds.
+   * Handles compact formats: YYYYMMDD, HHMMSS, HHMM.
+   */
+  function parseDateTimeToUnix(dateStr, timeStr) {
+    dateStr = String(dateStr).trim();
+    timeStr = String(timeStr).trim();
+
+    // Normalise compact date: YYYYMMDD → YYYY-MM-DD
+    if (/^\d{8}$/.test(dateStr)) {
+      dateStr = `${dateStr.slice(0,4)}-${dateStr.slice(4,6)}-${dateStr.slice(6,8)}`;
+    }
+
+    // Normalise compact time: HHMMSS → HH:MM:SS, HHMM → HH:MM:00
+    if (/^\d{6}$/.test(timeStr)) {
+      timeStr = `${timeStr.slice(0,2)}:${timeStr.slice(2,4)}:${timeStr.slice(4,6)}`;
+    } else if (/^\d{4}$/.test(timeStr)) {
+      timeStr = `${timeStr.slice(0,2)}:${timeStr.slice(2,4)}:00`;
+    }
+
+    let d = new Date(`${dateStr}T${timeStr}`);
+    if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
+
+    d = new Date(`${dateStr} ${timeStr}`);
+    if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
+
+    return null;
+  }
+
+  /**
+   * Parses a standalone date/timestamp string → 'YYYY-MM-DD' or Unix seconds.
    */
   function parseTime(raw) {
     const s = String(raw).trim();
-
-    // Unix timestamp (seconds)
     if (/^\d{9,10}$/.test(s)) return parseInt(s, 10);
+    if (/^\d{13}$/.test(s))   return Math.floor(parseInt(s, 10) / 1000);
 
-    // Unix timestamp (milliseconds)
-    if (/^\d{13}$/.test(s)) return Math.floor(parseInt(s, 10) / 1000);
-
-    // Try native Date parse — normalise to YYYY-MM-DD
     const d = new Date(s);
     if (!isNaN(d.getTime())) {
       const y  = d.getFullYear();
@@ -476,30 +510,56 @@
       const dy = String(d.getDate()).padStart(2, '0');
       return `${y}-${mo}-${dy}`;
     }
-
     return null;
   }
 
+  /** Formats a stored time value for human display. */
+  function formatTimeLabel(t) {
+    if (typeof t === 'number') {
+      const d = new Date(t * 1000);
+      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return String(t).substring(0, 10);
+  }
+
+  // ── CSV parser ────────────────────────────────────────────────────────────
   function parseCSV(text) {
-    // Split into lines, remove BOM if present
     const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/).filter(l => l.trim());
     if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row.');
 
-    // Detect delimiter: comma or semicolon or tab
+    // Auto-detect delimiter: semicolon, tab, or comma
     const delim = lines[0].includes(';') ? ';' : lines[0].includes('\t') ? '\t' : ',';
-
     const headers = lines[0].split(delim).map(h => h.trim().replace(/^"|"$/g, ''));
 
-    // Locate required columns
-    const iDate  = findCol(headers, 'date', 'datetime', 'timestamp', 'time', 'Date', 'Datetime', 'Timestamp', 'Time');
-    const iOpen  = findCol(headers, 'open', 'Open', 'OPEN');
-    const iHigh  = findCol(headers, 'high', 'High', 'HIGH');
-    const iLow   = findCol(headers, 'low',  'Low',  'LOW');
-    const iClose = findCol(headers, 'close', 'Close', 'CLOSE', 'adj close', 'Adj Close');
-    const iVol   = findCol(headers, 'volume', 'Volume', 'VOLUME', 'vol');
+    // ── Timestamp columns ─────────────────────────────────────────────────
+    // Prefer separate 'date' + 'time' columns; fall back to a single column.
+    const iDateOnly = findCol(headers, 'date');
+    const iTimeOnly = findCol(headers, 'time');
+    const hasDateTime = iDateOnly >= 0 && iTimeOnly >= 0;
 
+    const iTimestamp = hasDateTime
+      ? -1
+      : findCol(headers, 'date', 'datetime', 'timestamp', 'time',
+                'Date', 'Datetime', 'Timestamp', 'Time');
+
+    // ── OHLC columns ──────────────────────────────────────────────────────
+    const iOpen  = findCol(headers, 'open',  'Open',  'OPEN');
+    const iHigh  = findCol(headers, 'high',  'High',  'HIGH');
+    const iLow   = findCol(headers, 'low',   'Low',   'LOW');
+    const iClose = findCol(headers, 'close', 'Close', 'CLOSE', 'adj close', 'Adj Close');
+
+    // ── Volume columns ────────────────────────────────────────────────────
+    // New format: separate 'up' and 'down' columns for up/down volume.
+    const iUp   = findCol(headers, 'up',   'Up',   'UP',   'upvol',   'up_vol',   'up volume');
+    const iDown = findCol(headers, 'down', 'Down', 'DOWN', 'downvol', 'down_vol', 'down volume');
+    // Legacy fallback: single 'volume' column
+    const iVol  = (iUp >= 0 || iDown >= 0)
+      ? -1
+      : findCol(headers, 'volume', 'Volume', 'VOLUME', 'vol');
+
+    // ── Validate required columns ─────────────────────────────────────────
     const missing = [];
-    if (iDate  < 0) missing.push('date');
+    if (!hasDateTime && iTimestamp < 0) missing.push('date');
     if (iOpen  < 0) missing.push('open');
     if (iHigh  < 0) missing.push('high');
     if (iLow   < 0) missing.push('low');
@@ -508,12 +568,16 @@
       throw new Error(`Could not find column(s): ${missing.join(', ')}. Headers found: ${headers.join(', ')}`);
     }
 
+    // ── Parse rows ────────────────────────────────────────────────────────
     const rows = [];
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(delim).map(c => c.trim().replace(/^"|"$/g, ''));
       if (cols.length < 5) continue;
 
-      const time  = parseTime(cols[iDate]);
+      const time = hasDateTime
+        ? parseDateTimeToUnix(cols[iDateOnly], cols[iTimeOnly])
+        : parseTime(cols[iTimestamp]);
+
       const open  = parseFloat(cols[iOpen]);
       const high  = parseFloat(cols[iHigh]);
       const low   = parseFloat(cols[iLow]);
@@ -522,13 +586,16 @@
       if (time === null || isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close)) continue;
 
       const row = { time, open, high, low, close, value: close };
-      if (iVol >= 0) row.volume = parseFloat(cols[iVol]) || 0;
+
+      if (iUp   >= 0) row.upVol   = parseFloat(cols[iUp])   || 0;
+      if (iDown >= 0) row.downVol = parseFloat(cols[iDown]) || 0;
+      if (iVol  >= 0) row.upVol   = parseFloat(cols[iVol])  || 0; // legacy
+
       rows.push(row);
     }
 
     if (!rows.length) throw new Error('No valid rows found after parsing. Check that your date and numeric columns are correct.');
 
-    // Sort ascending by time (strings and numbers both work with < >)
     rows.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
 
     // Remove duplicate timestamps
@@ -542,13 +609,10 @@
   }
 
   // ── Chart render ──────────────────────────────────────────────────────────
-  function renderChart(data, filename) {
-    // Destroy previous chart
-    if (chart) {
-      chart.remove();
-      chart = null;
-      activeSeries = null;
-    }
+  function renderChart(data) {
+    if (chart) { chart.remove(); chart = null; activeSeries = null; }
+
+    const hasVolume = data.some(d => d.upVol !== undefined || d.downVol !== undefined);
 
     chart = LightweightCharts.createChart(chartContainer, {
       layout: {
@@ -561,17 +625,9 @@
         vertLines: { color: '#f1f5f9' },
         horzLines: { color: '#f1f5f9' },
       },
-      crosshair: {
-        mode: LightweightCharts.CrosshairMode.Normal,
-      },
-      rightPriceScale: {
-        borderColor: '#e4e4e7',
-      },
-      timeScale: {
-        borderColor: '#e4e4e7',
-        timeVisible: true,
-        secondsVisible: false,
-      },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor: '#e4e4e7' },
+      timeScale: { borderColor: '#e4e4e7', timeVisible: true, secondsVisible: false },
       handleScroll: true,
       handleScale:  true,
     });
@@ -582,6 +638,14 @@
     });
     ro.observe(chartContainer);
 
+    // Push OHLC series up to leave room for volume at the bottom
+    if (hasVolume) {
+      chart.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.05, bottom: 0.26 },
+      });
+    }
+
+    // ── Main OHLC series ──────────────────────────────────────────────────
     if (currentMode === 'candle') {
       activeSeries = chart.addCandlestickSeries({
         upColor:         '#16a34a',
@@ -593,43 +657,79 @@
       });
       toolbarLabel.textContent = 'Candlestick Chart';
     } else if (currentMode === 'bar') {
-      activeSeries = chart.addBarSeries({
-        upColor:   '#16a34a',
-        downColor: '#dc2626',
-      });
+      activeSeries = chart.addBarSeries({ upColor: '#16a34a', downColor: '#dc2626' });
       toolbarLabel.textContent = 'Bar Chart';
     } else {
-      activeSeries = chart.addLineSeries({
-        color:       '#2563eb',
-        lineWidth:   2,
-        crosshairMarkerVisible: true,
-      });
+      activeSeries = chart.addLineSeries({ color: '#2563eb', lineWidth: 2, crosshairMarkerVisible: true });
       toolbarLabel.textContent = 'Line Chart';
     }
 
     activeSeries.setData(data);
-    chart.timeScale().fitContent();
 
-    // Apply correct size
+    // ── Volume histogram ──────────────────────────────────────────────────
+    // Each bar = up + down volume; green if up >= down, red if down > up.
+    if (hasVolume) {
+      const volSeries = chart.addHistogramSeries({
+        priceFormat:  { type: 'volume' },
+        priceScaleId: 'vol',
+      });
+
+      chart.priceScale('vol').applyOptions({
+        scaleMargins: { top: 0.78, bottom: 0 },
+        visible: false,
+      });
+
+      volSeries.setData(data.map(d => {
+        const up   = d.upVol   || 0;
+        const down = d.downVol || 0;
+        return {
+          time:  d.time,
+          value: up + down,
+          color: up >= down ? 'rgba(22, 163, 74, 0.55)' : 'rgba(220, 38, 38, 0.55)',
+        };
+      }));
+    }
+
+    chart.timeScale().fitContent();
     chart.applyOptions({ width: chartContainer.clientWidth });
   }
 
   // ── Stats ─────────────────────────────────────────────────────────────────
+  function fmtVol(v) {
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+    return v.toLocaleString();
+  }
+
   function updateStats(data, filename) {
-    const highs  = data.map(d => d.high);
-    const lows   = data.map(d => d.low);
-    const maxH   = Math.max(...highs);
-    const minL   = Math.min(...lows);
-    const fmt    = v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    const maxH = Math.max(...data.map(d => d.high));
+    const minL = Math.min(...data.map(d => d.low));
+    const fmt  = v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
     statCandles.textContent  = data.length.toLocaleString();
-    statFrom.textContent     = String(data[0].time).substring(0, 10);
-    statTo.textContent       = String(data[data.length - 1].time).substring(0, 10);
+    statFrom.textContent     = formatTimeLabel(data[0].time);
+    statTo.textContent       = formatTimeLabel(data[data.length - 1].time);
     statHigh.textContent     = fmt(maxH);
     statLow.textContent      = fmt(minL);
     statFilename.textContent = filename;
 
-    statsBar.style.display    = 'flex';
+    const hasVolume = data.some(d => d.upVol !== undefined || d.downVol !== undefined);
+    if (hasVolume) {
+      const totalUp   = data.reduce((s, d) => s + (d.upVol   || 0), 0);
+      const totalDown = data.reduce((s, d) => s + (d.downVol || 0), 0);
+      statUpVol.textContent    = fmtVol(totalUp);
+      statDownVol.textContent  = fmtVol(totalDown);
+      volDivider.style.display = '';
+      statUpWrap.style.display = '';
+      statDownWrap.style.display = '';
+    } else {
+      volDivider.style.display   = 'none';
+      statUpWrap.style.display   = 'none';
+      statDownWrap.style.display = 'none';
+    }
+
+    statsBar.style.display     = 'flex';
     chartWrapper.style.display = 'block';
   }
 
@@ -648,17 +748,15 @@
         parsedData  = data;
         currentFile = file.name;
         setActiveBtn(currentMode);
-        renderChart(data, file.name);
+        renderChart(data);
         updateStats(data, file.name);
       } catch (err) {
         showError(err.message);
-        statsBar.style.display    = 'none';
+        statsBar.style.display     = 'none';
         chartWrapper.style.display = 'none';
       }
     };
     reader.readAsText(file);
-
-    // Reset input so the same file can be re-uploaded
     fileInput.value = '';
   }
 </script>
